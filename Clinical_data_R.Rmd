@@ -1,0 +1,77 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+
+
+```{r}
+library(ggplot2)
+
+clinical_data_94 <- read.csv(file = 'Clinical_data_GSE32646.csv')
+
+# Calculate the percentage of each Breast Cancer Type
+clinical_data_94$percentage <- with(clinical_data_94, ave(Breast.Cancer.Type, Breast.Cancer.Type, FUN = function(x) length(x) / nrow(clinical_data_94) * 100))
+
+# Assuming your dataframe is named df and the column with cancer stages is named Stage
+ggplot(clinical_data_94, aes(x = Breast.Cancer.Type, fill = Breast.Cancer.Type)) + 
+  geom_bar() +
+  geom_text(stat = 'count', aes(label = sprintf("%.1f%%", ..count../sum(..count..)*100)),
+            vjust = -0.5) + 
+  theme_minimal() +
+  labs(title = "Breast Cancer Type GSE32646",
+       x = "Breast Cancer Type", 
+       y = "Number of Samples") +
+  scale_fill_brewer(palette = "Pastel1") # Optional: Adds color
+
+# Recalculate counts to include percentages
+stage_counts <- table(clinical_data_94$Breast.Cancer.Type)
+percentages <- round(stage_counts / sum(stage_counts) * 100, 1)
+labels <- paste(names(stage_counts), "-", percentages, "%", sep="")
+
+# Updated Pie Chart
+pie(stage_counts, 
+    labels = labels, 
+    #main = "Distribution of Breast Cancer Types Among GSE20271 Samples", 
+    col = rainbow(length(stage_counts))) # Adds color
+
+# Updated Legend (Optional if you want to use the labels directly on the pie)
+legend("bottomleft", legend = labels, fill = rainbow(length(stage_counts)), cex = 0.8, title = "Breast.Cancer.Type among  GSE32646 samples")
+
+```
+
+
+
+```{r}
+#Remember to use this kind of plot, the age should be numerical, not in category since the BC type is categorial
+ggplot(clinical_data_94, aes(x = Age, y = Breast.Cancer.Type, fill = Age)) +
+  geom_boxplot() +
+  theme_minimal() +
+  labs(title = "Age Distribution by Breast Cancer Type", x = "Age", y = "Breast.Cancer.Type")
+```
+
+
+```{r}
+# Load necessary libraries
+library(ggplot2)
+
+# Assuming your data is loaded into a dataframe called 'data'
+# And you've already read the CSV into 'data'
+clinical_data_94 <- read.csv(file = 'Clinical_data_GSE32646.csv')
+
+
+# Create a count plot
+ggplot(clinical_data_94, aes(x = pcr_vs_rd, fill = treatment.type)) +
+  geom_bar(position = "dodge") +
+  theme_minimal() +
+  labs(title = "Drug Response TNBC GSE32646",
+       x = "Drug Response Category",
+       y = "Count") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) + # Rotate x-axis labels for better readability
+  scale_fill_brewer(palette = "Set2") # Use a color palette that's distinct and visually appealing
+
+# Display the plot
+```
+
+
+

@@ -1,0 +1,551 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r}
+clinical_TFAC <- read.csv(file = 'clinical_TFAC.csv')
+write.csv(clinical_TFAC, "clinical_TFAC.csv")
+
+library(affycoretools)
+library(affy)
+
+files_mix <- list.files(pattern = "CEL.gz")
+celfiles_mix <- lapply(files_mix, function(x) ReadAffy(filenames = x))
+table(sapply(celfiles_mix, annotation))
+hgu133a_mix <- ReadAffy(filenames = celfiles_mix$hgu133a)
+```
+
+```{r}
+#BiocManager::install("gcrma")
+#memory.limit()
+memory.limit(size=40000)
+library(gcrma)
+eset <- gcrma(hgu133a_mix)
+exprs <- exprs(eset)
+write.csv(exprs, "exprs_TFAC.csv")
+```
+
+```{r}
+library(hgu133a.db)
+celfiles.filtered <- nsFilter(eset, require.entrez=TRUE, remove.dupEntrez=TRUE)
+celfiles.filtered$eset
+celfiles.filtered$filter.log
+
+ans <- nsFilter(eset, var.filter=TRUE)
+ans$eset
+write.csv(exprs(ans$eset), "eset_TFAC.csv")
+```
+
+
+```{r}
+gene_variances_TFAC <- apply(eset, 1, var)
+high_var_genes_TFAC <- rownames(eset)[gene_variances_TFAC > 0.5]
+expr_data_filtered_TFAC<- eset[high_var_genes_TFAC, ]
+
+probe_pvalues_TFAC <- apply(expr_data_filtered_TFAC, 1, function(x) t.test(x, mu=0)$p.value)
+significant_probes_TFAC <- expr_data_filtered_TFAC[probe_pvalues_TFAC < 0.01, ]
+
+dim(significant_probes_TFAC)
+write.csv(significant_probes_TFAC, "significant_probes_significant_TFAC.csv")
+```
+
+
+```{r}
+normalize_TFAC <- normalizeBetweenArrays(exprs(ans$eset))
+par(mar=c(7,5,1,1))
+boxplot(normalize_TFAC,las =2, outline=FALSE)
+```
+
+
+```{r}
+library(limma)
+
+design_TFAC <- model.matrix(~0+factor(clinical_TFAC$chemo_response))
+design_TFAC
+
+## the column names are a bit ugly, so we will rename
+colnames(design_TFAC) <- c("pCR","RD")
+fit_TFAC<- lmFit(ans$eset, design_TFAC)
+head(fit_TFAC$coefficients)
+
+contrasts <- makeContrasts(pCR - RD, levels=design_TFAC)
+fit2_TFAC<- contrasts.fit(fit_TFAC, contrasts)
+fit2_TFAC <- eBayes(fit2_TFAC)
+Toptable_TFAC <- topTable(fit2_TFAC, coef=1, n = "inf",  adjust = "fdr")
+Toptable_TFAC$log2FC <- logratio2foldchange(Toptable_TFAC$logFC, base = 2)
+Toptable_TFAC
+
+FDR_A <- p.adjust(Toptable_TFAC$P.Value, method = "fdr", n = length(Toptable_TFAC$P.Value))
+FDR_A <- as.data.frame(FDR_A)
+FDR_A
+
+Results.Toptable_TFAC <- cbind(Toptable_TFAC, FDR_A)
+Results.Toptable_TFAC
+```
+
+
+```{r}
+library(hgu133a.db)
+library(hgu133plus2.db)
+library(annotate)
+gene.symbols_TFAC<- getSYMBOL(row.names(Results.Toptable_TFAC), "hgu133a")
+results_TFAC<- cbind(Results.Toptable_TFAC, gene.symbols_TFAC)
+results_TFAC
+write.csv(results_TFAC, "results_output_TFAC_all_genes.csv")
+```
+
+
+```{r}
+# Loading relevant libraries 
+library(tidyverse) # includes ggplot2, for data visualisation. dplyr, for data manipulation.
+library(RColorBrewer) # for a colourful plot
+library(ggrepel) # for nice annotations
+
+# Create a basic volcano plot
+
+# Add a column to the data frame to specify if they are UP- or DOWN- regulated (log2fc respectively positive or negative)<br /><br /><br />
+results_TFAC$diffexpressed <- "NO"
+# if log2Foldchange > 1 and pvalue < 0.05, set as "UP"
+results_TFAC$diffexpressed[results_TFAC$logFC > 1 & results_TFAC$FDR_A < 0.1] <- "UP"
+# if log2Foldchange < -1 and pvalue < 0.05, set as "DOWN"
+results_TFAC$diffexpressed[results_TFAC$logFC < -1 & results_TFAC$FDR_A < 0.1] <- "DOWN"
+head(results_TFAC[order(results_TFAC$FDR_A) & results_TFAC$diffexpressed == 'DOWN', ])
+head(results_TFAC[order(results_TFAC$FDR_A) & results_TFAC$diffexpressed == 'UP', ])
+
+
+results_TFAC$delabel <- ifelse(results_TFAC$gene.symbols_TFAC %in% head(results_TFAC[order(results_TFAC$FDR), "gene.symbols_TFAC"], 160), results_TFAC$gene.symbols_TFAC, NA)
+
+ggplot(data = results_TFAC, aes(x = log2FC, y = -log10(P.Value), col = diffexpressed, label = delabel)) +
+  geom_vline(xintercept = c(-1, 1), col = "gray", linetype = 'dashed') +
+  geom_hline(yintercept = -log10(0.1), col = "gray", linetype = 'dashed') +
+  geom_point(size = 2) +
+  scale_color_manual(values = c("#00AFBB", "black", "#bb0c00"), 
+                     labels = c("Downregulated", "Not significant", "Upregulated")) +
+  labs(color = 'DEGs', #legend_title, 
+       x = expression("log"[2]*"FC"), y = expression("-log"[10]*"P.Value")) + 
+  scale_x_continuous(breaks = seq(-10, 10, 2)) + # to customise the breaks in the x axis
+  ggtitle('pCR VS RD of T/FAC  Drug in TNBC patients') + # Plot title 
+  geom_text_repel(aes(label = delabel)) # To show all labels 
+```
+
+```{r}
+TFAC_DEGs <- read.csv(file = 'results_output_TFAC_all_genes - Copy.csv', row.names = 1)
+```
+
+```{r}
+library(EnhancedVolcano)
+EnhancedVolcano(TFAC_DEGs,
+    lab = rownames(TFAC_DEGs),
+    x = 'logFC',
+    y = 'pvalue',
+    xlim = c(-2.5, 2.5),
+    ylim = c(0, 6),
+    title = 'pCR versus RD TFAC for TNBC patients',
+    pCutoff = 0.05,
+    FCcutoff = 0.5,
+    labFace = 'bold')
+```
+
+```{r}
+data <- read.csv(file = 'data_scale.csv', row.names = 1)
+data.scale <- scale(data)
+write.csv(data.scale, "data_scale_update.csv") 
+```
+
+
+```{r}
+library(glmnet)
+library(dplyr)
+library(caret)
+library(pls)
+
+#PCA plot before feature selection performance
+library(ggrepel)
+library(dplyr)
+
+train_data_TFAC <- read.csv(file = 'train_data_TFAC.csv', row.names = 1)
+
+# Loading the library
+train_data_TFAC$chemo_response <- as.factor(train_data_TFAC$chemo_response)
+nfolds = 10 # number of folds
+
+x_primary = model.matrix(chemo_response~., train_data_TFAC) # trim off the first column
+                                         # leaving only the predictors
+y_primary = train_data_TFAC %>%
+  select(chemo_response) %>%
+  unlist() %>%
+  as.numeric()
+
+
+library(ncvreg)
+#svg("lasso.coef_new.svg",width=10, height=10, pointsize=10)
+lasso_mod = glmnet(x_primary, 
+                   y_primary, 
+                   alpha = 1,
+                   nfolds = 10)
+# Fit lasso model on training data
+bestlam = lasso_mod$lambda.min  # Select lamda that minimizes training MSE
+bestlam
+
+
+plot(lasso_mod)    # Draw plot of coefficients
+cv.fit1 <- cv.ncvreg(
+  X = x_primary, y = y_primary, penalty = "lasso")
+summary(cv.fit1)
+plot(cv.fit1)
+## Within cv.fit is the fitted lasso model (fit)
+## Within the fitted model is beta, a matrix of regression coefficients for each lambda
+## We want only the column of beta corresponding to the lambda that minimizes CV RSME
+all_coefs1 <- cv.fit1$fit$beta[,cv.fit1$fit$lambda == cv.fit1$lambda.min]
+all_coefs1[all_coefs1 != 0]
+#write.csv(all_coefs1[all_coefs1 != 0], "lasso.coef.train_data.csv") 
+```
+```{r}
+#VARSELRF
+Data_scale_update$chemo_response <- as.factor(Data_scale_update$chemo_response)
+
+
+x_varselrf1 <- dplyr::select(Data_scale_update, -chemo_response)
+x_varselrf1 <- x_varselrf1
+y_varselrf1 <- Data_scale_update$chemo_response
+
+
+
+library(varSelRF)
+rf.vs1<- varSelRF(x_varselrf1, y_varselrf1)
+
+fit = rf.vs1$initialImportances
+
+#write.csv(fit, "fit_7_13.csv")
+
+VARS <-rf.vs1$selected.vars
+VARS
+
+rf <- randomForest(x_varselrf1, y_varselrf1)
+rf.rvi <- randomVarImpsRF(x_varselrf1, y_varselrf1,rf,numrandom = 20,usingCluster = FALSE)
+varImpPlot(rf)
+
+VI_F=importance(rf)
+varImpPlot(rf, type =2)
+rf$ntree
+
+#write.csv(VARS, "VARS_train_data.csv")
+```
+```{r}
+# Run algorithms using 10-fold cross validation
+
+library(randomForest)
+library(randomForest)
+library(prediction)
+library(ROCR)
+library(pROC)
+require(party)
+library(dplyr)
+library(ggplot2)
+library(caret)
+library(varImp)
+#rf-other method
+
+train_data_TFAC <- read.csv(file = 'train_data_TFAC.csv', row.names = 1)
+
+test_data_TFAC <- read.csv(file = 'test_data_TFAC.csv', row.names = 1)
+
+train_data_TFAC$chemo_response <- as.factor(train_data_TFAC$chemo_response)
+test_data_TFAC$chemo_response <- as.factor(test_data_TFAC$chemo_response)
+
+
+x.rf.imp.weka <- randomForest(chemo_response~ ., data= train_data_TFAC)
+p1.x.cf1_imp.weka<- predict(x.rf.imp.weka, train_data_TFAC)
+confusionMatrix(p1.x.cf1_imp.weka, train_data_TFAC$chemo_response)
+pred.x.cf1_imp.weka <- predict(x.rf.imp.weka, test_data_TFAC, type = "response")
+confusionMatrix(pred.x.cf1_imp.weka, test_data_TFAC$chemo_response)
+preds.x.cf1_imp.weka <- prediction(as.numeric(pred.x.cf1_imp.weka), na.omit(test_data_TFAC$chemo_response))
+perf.x.cf1_imp.weka <- performance(preds.x.cf1_imp.weka,"tpr","fpr")
+performance(preds.x.cf1_imp.weka,"auc")@y.values
+
+
+#SVM
+library(caret)
+require(e1071)
+x.svm.imp.weka <- svm(chemo_response~., data= train_data_TFAC,type="C-classification",kernel="radial")
+p1.x.svm.cf1_imp.weka <- predict(x.svm.imp.weka, na.omit(train_data_TFAC), type="prob")
+confusionMatrix(p1.x.svm.cf1_imp.weka, na.omit(train_data_TFAC$chemo_response))
+pred.svm.cf1_imp.weka <- predict(x.svm.imp.weka,  na.omit(test_data_TFAC), type="prob")
+confusionMatrix(pred.svm.cf1_imp.weka, na.omit(test_data_TFAC$chemo_response))
+preds.svm.cf1_imp.weka <- prediction(as.numeric(pred.svm.cf1_imp.weka), na.omit(test_data_TFAC$chemo_response))
+perf.svm.cf1_imp.weka <- performance(preds.svm.cf1_imp.weka,"tpr","fpr")
+performance(preds.svm.cf1_imp.weka,"auc")@y.values
+
+```
+
+```{r}
+x.rf.varselrf.weka <- train(chemo_response ~., data=train_data_TFAC, method="rf")
+p1.x.rf.cf1_varselrf.weka <- predict(x.rf.varselrf.weka, train_data_TFAC, type="raw")
+confusionMatrix(p1.x.rf.cf1_varselrf.weka, train_data_TFAC$chemo_response)
+pred.rf.cf1_varselrf.weka <- predict(x.rf.varselrf.weka,  test_data_TFAC, type="raw")
+confusionMatrix(pred.rf.cf1_varselrf.weka, test_data_TFAC$chemo_response)
+preds.rf.cf1_varselrf.weka <- prediction(as.numeric(pred.rf.cf1_varselrf.weka),test_data_TFAC$chemo_response)
+perf.rf.cf1_varselrf.weka <- performance(preds.rf.cf1_varselrf.weka,"tpr","fpr")
+performance(preds.rf.cf1_varselrf.weka,"auc")@y.values
+```
+
+
+```{r}
+library(pROC)
+#rf_train
+pred_rf_varselrf_lasso <- predict(x.knn.varselrf.weka, test_data_TFAC, index=2, type="prob", norm.votes=TRUE, predict.all= TRUE, proximity=TRUE, nodes=TRUE)
+head(pred_rf_varselrf_lasso)
+pred_rf_varselrf_lasso <- data.frame(pred_rf_varselrf_lasso)
+
+rf_train_lasso_varselrf <- roc(test_data_TFAC$chemo_response, pred_rf_varselrf_lasso$pCR)
+plot(rf_train_lasso_varselrf, col="red", lwd=3, main="ROC curve QDA", grid = TRUE, legacy.axes = TRUE, asp = NA, print.auc=TRUE)
+auc(rf_train_lasso_varselrf)
+```
+
+
+
+```{r}
+Data_scale_update <- read.csv(file = 'Train_data_DEGs.csv', row.names = 1)
+
+anova3 <- aov(CCND1 ~ chemo_response, data = Data_scale_update)
+anova3
+
+
+ggplot(Data_scale_update, aes(chemo_response, CCND1)) + 
+  geom_boxplot(aes(fill = chemo_response), show.legend = TRUE) +
+  labs(x="T/FAC RESPONSE", y="CCND1 Gene") +
+  theme_bw() +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+  geom_text(data = Data_scale_update, aes(x = chemo_response, y = CCND1), size = 3, vjust=-1, hjust =-1, color = "darkblue")
+
+
+
+wilcox.test(Data_scale_update$CCND1 ~ chemo_response, data = Data_scale_update)
+pairwise.wilcox.test(Data_scale_update$CCND1, Data_scale_update$chemo_response)
+
+library(ggpubr)
+library(ggplot2)
+
+p <- ggboxplot(Data_scale_update, x = "chemo_response", y = "CCND1", palette = "jco", add = "jitter") +  labs(x="T/FAC RESPONSE", y="CCND1 Gene") + geom_boxplot(aes(fill = chemo_response), show.legend = TRUE)
+#  Add p-value
+p + stat_compare_means()
+# Change method
+p + stat_compare_means(method = "wilcox.test")
+```
+```{r}
+library(multcompView)
+
+anova <- aov(MTAP ~ chemo_response, data = Data_scale_update)
+anova
+
+ggplot(Data_scale_update, aes(chemo_response, MTAP)) + 
+  geom_boxplot(aes(fill = chemo_response), show.legend = TRUE) +
+  labs(x="T/FAC RESPONSE", y="MTAP Gene") +
+  theme_bw() +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+  geom_text(data = Data_scale_update, aes(x = chemo_response, y = MTAP), size = 3, vjust=-1, hjust =-1, color = "darkblue")
+
+
+
+wilcox.test(Data_scale_update$MTAP ~ chemo_response, data = Data_scale_update)
+pairwise.wilcox.test(Data_scale_update$MTAP, Data_scale_update$chemo_response)
+
+library(ggpubr)
+library(ggplot2)
+
+p <- ggboxplot(Data_scale_update, x = "chemo_response", y = "MTAP", palette = "jco", add = "jitter") +  labs(x="T/FAC RESPONSE", y="MTAP Gene") + geom_boxplot(aes(fill = chemo_response), show.legend = TRUE)
+#  Add p-value
+p + stat_compare_means()
+# Change method
+p + stat_compare_means(method = "wilcox.test")
+```
+```{r}
+anova2 <- aov(CLDND1 ~ chemo_response, data = Data_scale_update)
+anova2
+
+
+ggplot(Data_scale_update, aes(chemo_response, CLDND1)) + 
+  geom_boxplot(aes(fill = chemo_response), show.legend = TRUE) +
+  labs(x="T/FAC RESPONSE", y="CLDND1 Gene") +
+  theme_bw() +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+  geom_text(data = Data_scale_update, aes(x = chemo_response, y = CLDND1), size = 3, vjust=-1, hjust =-1, color = "darkblue")
+
+
+
+wilcox.test(Data_scale_update$CLDND1 ~ chemo_response, data = Data_scale_update)
+pairwise.wilcox.test(Data_scale_update$CLDND1, Data_scale_update$chemo_response)
+
+library(ggpubr)
+library(ggplot2)
+
+p <- ggboxplot(Data_scale_update, x = "chemo_response", y = "CLDND1", palette = "jco", add = "jitter") +  labs(x="T/FAC RESPONSE", y="CLDND1 Gene") + geom_boxplot(aes(fill = chemo_response), show.legend = TRUE)
+#  Add p-value
+p + stat_compare_means()
+# Change method
+p + stat_compare_means(method = "wilcox.test")
+```
+```{r}
+anova4 <- aov(SMURF2 ~ chemo_response, data = Data_scale_update)
+anova4
+
+
+ggplot(Data_scale_update, aes(chemo_response, SMURF2)) + 
+  geom_boxplot(aes(fill = chemo_response), show.legend = TRUE) +
+  labs(x="T/FAC RESPONSE", y="SMURF2 Gene") +
+  theme_bw() +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+  geom_text(data = Data_scale_update, aes(x = chemo_response, y = SMURF2), size = 3, vjust=-1, hjust =-1, color = "darkblue")
+
+
+
+wilcox.test(Data_scale_update$SMURF2 ~ chemo_response, data = Data_scale_update)
+pairwise.wilcox.test(Data_scale_update$SMURF2, Data_scale_update$chemo_response)
+
+library(ggpubr)
+library(ggplot2)
+
+p <- ggboxplot(Data_scale_update, x = "chemo_response", y = "SMURF2", palette = "jco", add = "jitter") +  labs(x="T/FAC RESPONSE", y="SMURF2 Gene") + geom_boxplot(aes(fill = chemo_response), show.legend = TRUE)
+#  Add p-value
+p + stat_compare_means()
+# Change method
+p + stat_compare_means(method = "wilcox.test")
+```
+
+
+
+```{r}
+install.packages("ComplexHeatmap")
+library(ComplexHeatmap)
+library(pheatmap)
+data_for_heatmap <- read.csv(file = 'data_for_heatmap.csv', row.names = 1)
+
+pheatmap(data_for_heatmap)
+#pheatmap(data_for_heatmap, scale = "row")
+pheatmap(data_for_heatmap, color = colorRampPalette(c("navy", "white", "firebrick3"))(50))
+pheatmap(data_for_heatmap, cluster_row = FALSE)
+pheatmap(data_for_heatmap, legend = TRUE)
+
+
+#annotation
+clinical_data_pheatmap <- read.csv(file = 'clinical_data_pheatmap.csv', row.names = 1)
+clinical_data_pheatmap$chemo_response = as.factor(clinical_data_pheatmap$chemo_response)
+
+pheatmap(data_for_heatmap, annotation = clinical_data_pheatmap, color = colorRampPalette(c("navy", "white", "firebrick3"))(50))
+
+
+fa_col = c("a" = 2, "b" = 3, "c" = 4)
+fa = rep(c("pCR", "RD"), times = c(20, 29))
+dend1 = cluster_between_groups(data_for_heatmap, fa)
+Heatmap(data_for_heatmap, cluster_columns = dend1, column_split = 2,
+    row_title = "cluster_between_groups",
+    top_annotation = HeatmapAnnotation(foo = fa, col = list(foo = fa_col)))
+
+
+```
+
+
+```{r}
+# Load necessary library
+library(pheatmap)
+
+# Load the heatmap data
+data_for_heatmap <- read.csv(file = 'data_for_heatmap.csv', row.names = 1)
+clinical_data_pheatmap <- read.csv(file = 'clinical_data_pheatmap.csv', row.names = 1)
+
+
+# Load clinical data for annotations
+clinical_data_pheatmap$chemo_response <- as.factor(clinical_data_pheatmap$chemo_response)
+
+# Prepare annotation data
+# Assuming 'chemo_response' is the variable you want to use for grouping
+annotation_col <- data.frame(Chemo_Response = clinical_data_pheatmap$chemo_response)
+rownames(annotation_col) <- rownames(clinical_data_pheatmap)
+
+combined_data <- data_for_heatmap[, rownames(clinical_data_pheatmap)]
+
+
+# Generate a color palette for the annotation
+annotation_colors <- list(Chemo_Response = c(pCR = "blue", RD = "red"))
+
+ordered_data <- combined_data[, order(clinical_data_pheatmap$chemo_response)]
+
+
+# Create the heatmap with annotation
+pheatmap(ordered_data, 
+         color = colorRampPalette(c("navy", "white", "firebrick3"))(50), 
+         annotation_col = annotation_col,
+         annotation_colors = annotation_colors,
+         scale = "row", # Optional: scales rows to have zero mean and unit variance
+         cluster_rows = TRUE, # Ensure this is TRUE to cluster rows
+         cluster_cols = TRUE, # Cluster columns; adjust accordingly based on your data and preference
+         show_rownames = T, # Adjust based on preference
+         show_colnames = T, # Adjust based on preference
+         legend = TRUE)
+```
+
+
+
+```{r}
+# Order the heatmap data columns based on the chemo_response grouping in clinical data
+# Ensuring 'pCR' samples come first, followed by 'RD' samples
+# This assumes that the samples in data_for_heatmap correspond to the rows in clinical_data
+ordered_columns <- order(clinical_data_pheatmap$chemo_response)
+ordered_data_for_heatmap <- data_for_heatmap[, rownames(clinical_data_pheatmap)[ordered_columns]]
+
+# Prepare annotation data for columns based on the new order
+annotation_col <- data.frame(Chemo_Response = clinical_data_pheatmap$chemo_response[ordered_columns])
+rownames(annotation_col) <- rownames(clinical_data_pheatmap)[ordered_columns]
+
+# Generate a color palette for the annotation
+annotation_colors <- list(Chemo_Response = c(pCR = "blue", RD = "red"))
+
+# Create the heatmap with ordered data and annotation
+pheatmap(ordered_data_for_heatmap, 
+         color = colorRampPalette(c("navy", "white", "firebrick3"))(50), 
+         annotation_col = annotation_col,
+         annotation_colors = annotation_colors,
+         scale = "row", # Optional: scales rows to have zero mean and unit variance
+         cluster_rows = TRUE,  # To cluster rows based on similarity
+         cluster_cols = FALSE, # Disable column clustering to preserve 'pCR' and 'RD' order
+         show_rownames = TRUE, 
+         show_colnames = TRUE, 
+         legend = TRUE)
+```
+
+
+
+
+
+
+```{r}
+
+	# Draw heatmaps
+	pheatmap(test)
+	pheatmap(test, scale = "row", clustering_distance = "correlation")
+	pheatmap(test, color = colorRampPalette(c("navy", "white", "firebrick3"))(50))
+	pheatmap(test, cluster_row = FALSE)
+	pheatmap(test, legend = FALSE)
+	pheatmap(test, cellwidth = 15, cellheight = 12)
+	pheatmap(test, cellwidth = 15, cellheight = 12, fontsize = 8, filename = "test.pdf")
+
+	# Generate column annotations
+	annotation = data.frame(Var1 = factor(1:10 %% 2 == 0, labels = c("Class1", "Class2"))
+	, Var2 = 1:10)
+	rownames(annotation) = paste("Test", 1:10, sep = "")
+
+	pheatmap(test, annotation = annotation)
+	pheatmap(test, annotation = annotation, annotation_legend = FALSE)
+
+
+	# Specify colors
+	Var1 = c("navy", "darkgreen")
+	names(Var1) = c("Class1", "Class2")
+	Var2 = c("lightgreen", "navy")
+
+	ann_colors = list(Var1 = Var1, Var2 = Var2)
+
+	pheatmap(test, annotation = annotation, annotation_colors = ann_colors)
+```
+

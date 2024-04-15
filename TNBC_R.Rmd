@@ -1,0 +1,526 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r}
+library(oligo)
+library(affycoretools)
+
+celfiles_TNBC= list.files(path = ".", pattern = ".CEL", all.files = FALSE,
+                      full.names = FALSE, recursive = FALSE, ignore.case = FALSE)
+memory.limit(size=100000)
+dat_TNBC <- read.celfiles(celfiles_TNBC)
+eset_TNBC <- oligo::rma(dat_TNBC)
+exprs_TNBC <- exprs(eset_TNBC)
+norm.quantiles.TNBC <- normalizeQuantiles(exprs_TNBC, ties=TRUE)
+
+par(mar=c(7,5,1,1))
+boxplot(norm.quantiles.TNBC,las =2, outline=FALSE)
+
+write.csv(norm.quantiles.TNBC, "norm.quantiles.ex.TNBC.csv")
+```
+
+```{r}
+library(GEOquery)
+
+#data - continuous
+Sys.setenv("VROOM_CONNECTION_SIZE" ="5000000")
+GSE25066_data<- getGEO("GSE25066", GSEMatrix =TRUE, AnnotGPL=TRUE)
+if (length(GSE25066_data) > 1) idx <- grep("GPL96", attr(GSE25066_data, "names")) else idx <- 1
+GSE25066_data <-GSE25066_data[[idx]]
+
+GSE20271_data<- getGEO("GSE20271", GSEMatrix =TRUE, AnnotGPL=TRUE)
+if (length(GSE20271_data) > 1) idx <- grep("GPL96", attr(GSE20271_data, "names")) else idx <- 1
+GSE20271_data <-GSE20271_data[[idx]]
+
+GSE20194_data<- getGEO("GSE20194", GSEMatrix =TRUE, AnnotGPL=TRUE)
+if (length(GSE20194_data) > 1) idx <- grep("GPL96", attr(GSE20194_data, "names")) else idx <- 1
+GSE20194_data <-GSE20194_data[[idx]]
+
+GSE32646_data<- getGEO("GSE32646", GSEMatrix =TRUE, AnnotGPL=TRUE)
+if (length(GSE32646_data) > 1) idx <- grep("GPL570", attr(GSE32646_data, "names")) else idx <- 1
+GSE32646_data <-GSE32646_data[[idx]]
+```
+
+```{r}
+library(ggrepel)
+library(dplyr)
+library(stats)
+
+#Differential Expression
+
+clinical_TNBC <- read.csv(file = 'clinical_TNBC.csv', row.names = 1)
+
+library(limma)
+design_TNBC <- model.matrix(~0+clinical_TNBC$response)
+design_TNBC
+
+## the column names are a bit ugly, so we will rename
+colnames(design_TNBC) <- c("pCR","RD")
+fit_TNBC <- lmFit(norm.quantiles.TNBC, design_TNBC)
+head(fit_TNBC$coefficients)
+
+contrasts <- makeContrasts(pCR - RD, levels=design_TNBC)
+fit2_TNBC <- contrasts.fit(fit_TNBC, contrasts)
+fit2_TNBC <- eBayes(fit2_TNBC)
+Toptable <- topTable(fit2_TNBC, coef=1, adjust.method = "fdr")
+
+library(stringr)
+library(dplyr)
+
+anno_fData <- fData(GSE39582_data)
+
+GSE39582_data_fdata <- select(GSE39582_data_fdata, "Gene symbol","Gene ID")
+fit2_TNBC$genes <- GSE39582_data_fdata
+topTable(fit2_TNBC,coef=1, adjust.method = "fdr")
+
+full_results_TNBC <- topTable(fit2_TNBC, number=Inf,adjust.method = "fdr")
+head(full_results_TNBC)
+
+library(readr)
+full_output_TNBC <- cbind(full_results_TNBC,norm.quantiles.TNBC)
+write_csv(full_output_TNBC, path="full_output_TNBC_quantile.csv")
+
+```
+
+```{r}
+#SCALE_TRAINING_SET
+DEGs_TNBC <- read.csv(file = 'TNBC_data_balanced.csv', row.names=1)
+clinical_TNBC <- read.csv(file = 'clinical_TNBC_balanced.csv')
+
+TNBC_data.scale <- scale(DEGs_TNBC)
+TNBC_data.scale <- data.frame(TNBC_data.scale)
+response <- clinical_TNBC$response
+TNBC_data.scale.transpose <- t(TNBC_data.scale)
+TNBC_data.scale.transpose <- data.frame(TNBC_data.scale.transpose)
+TNBC_data.scaled <- cbind(TNBC_data.scale.transpose,response)
+TNBC_data.scaled$response <- as.factor(TNBC_data.scaled$response)
+write.csv(TNBC_data.scaled, "DATA_TNBC_SCALED.csv")
+```
+
+```{r}
+#Loading caret library
+library(caret)
+#Creating folds
+fold_4 <- createFolds(TNBC_data.scaled$response, k=10)
+#Display folds
+View(fold_4)
+dim(TNBC_data.scaled)
+```
+
+```{r}
+#Training data
+train_data_TNBC <- TNBC_data.scaled[-fold_4$Fold02, ]
+dim(train_data_TNBC)
+head(train_data_TNBC)
+write.csv(train_data_TNBC, "train_data_TNBC_FOLD02_2.csv")
+```
+
+```{r}
+#PCA_TRAINING_SET_BEFORE_FEATURE_SELECTION
+num_pca_train_b_fS = subset(train_data_TNBC, select = -c(response) )
+
+library(factoextra)
+pc_pvalues_Train_b_fs <- prcomp(num_pca_train_b_fS,scale = FALSE)#%>% fviz_eig()
+pc_pvalues_Train_b_fs
+summary(pc_pvalues_Train_b_fs)
+
+library(ggbiplot)
+biplot1=ggbiplot(pc_pvalues_Train_b_fs, choices = c(1,2), obs.scale = 1,var.scale = 1,
+  groups = train_data_TNBC$response, var.axes = FALSE, ellipse = FALSE) + scale_color_discrete(name = '') +
+  theme(legend.direction = 'horizontal', legend.position = 'top')
+biplot1 + theme_classic()
+```
+```{r}
+#Creating test data 
+test_data_TNBC <- TNBC_data.scaled[fold_4$Fold02, ]
+head(test_data_TNBC)
+write.csv(test_data_TNBC, "test_data_TNBC_FOLD02_2.csv")
+```
+
+```{r}
+#PCA_TEST_SET_BEFORE_FEATURE_SELECTION
+num_pca_test_b_fS_primary = subset(test_data_TNBC, select = -c(response) )
+
+library(factoextra)
+pc_pvalues_Test_b_fs_primary <- prcomp(num_pca_test_b_fS_primary,scale = FALSE)#%>% fviz_eig()
+pc_pvalues_Test_b_fs_primary
+summary(pc_pvalues_Test_b_fs_primary)
+
+library(ggbiplot)
+biplot2=ggbiplot(pc_pvalues_Test_b_fs_primary, choices = c(1,2), obs.scale = 1,var.scale = 1,
+  groups = test_data_TNBC$response, var.axes = FALSE, ellipse = FALSE) + scale_color_discrete(name = '') +
+  theme(legend.direction = 'horizontal', legend.position = 'top')
+biplot2 + theme_classic()
+```
+```{r}
+#FEATURE SELECTION TRAINING SET
+
+library(glmnet)
+library(dplyr)
+library(caret)
+library(pls)
+
+#PCA plot before feature selection performance
+library(ggrepel)
+library(dplyr)
+
+# Loading the library
+train_data_TNBC$response <- as.factor(train_data_TNBC$response)
+nfolds = 5 # number of folds
+
+x_primary = model.matrix(response~., train_data_TNBC) # trim off the first column
+                                         # leaving only the predictors
+y_primary = train_data_TNBC %>%
+  select(response) %>%
+  unlist() %>%
+  as.numeric()
+
+library(ncvreg)
+#svg("lasso.coef_new.svg",width=10, height=10, pointsize=10)
+lasso_mod = glmnet(x_primary, 
+                   y_primary, 
+                   alpha = 1)
+# Fit lasso model on training data
+bestlam = lasso_mod$lambda.min  # Select lamda that minimizes training MSE
+bestlam
+plot(lasso_mod)    # Draw plot of coefficients
+set.seed(0)
+cv.fit1 <- cv.ncvreg(
+  X = x_primary, y = y_primary, penalty = "lasso")
+summary(cv.fit1)
+plot(cv.fit1)
+
+## Within cv.fit is the fitted lasso model (fit)
+## Within the fitted model is beta, a matrix of regression coefficients for each lambda
+## We want only the column of beta corresponding to the lambda that minimizes CV RSME
+all_coefs1 <- cv.fit1$fit$beta[,cv.fit1$fit$lambda == cv.fit1$lambda.min]
+all_coefs1[all_coefs1 != 0]
+#cv.fit$fit$lambda == cv.fit$lambda.min
+write.csv(all_coefs1[all_coefs1 != 0], "lasso.coef.train_TNBC.csv")
+```
+
+
+```{r}
+
+cv.lambda.lasso <- cv.glmnet(x=x_primary, y=y_primary, alpha = 1) 
+plot(cv.lambda.lasso)                        #MSE for several lambdas
+cv.lambda.lasso  
+plot(cv.lambda.lasso$glmnet.fit, "lambda", label=FALSE)
+
+l.lasso.min <- cv.lambda.lasso$lambda.min
+lasso.model <- glmnet(x=x_primary, y=y_primary,alpha  = 1, lambda = l.lasso.min)
+
+## Within cv.fit is the fitted lasso model (fit)
+## Within the fitted model is beta, a matrix of regression coefficients for each lambda
+## We want only the column of beta corresponding to the lambda that minimizes CV RSME
+all_coef <- cv.lambda.lasso$glmnet.fit$beta[,cv.lambda.lasso$glmnet.fit$lambda== cv.lambda.lasso$lambda.min]
+all_coef[all_coef != 0]
+#cv.fit$fit$lambda == cv.fit$lambda.min
+#write.csv(all_coef[all_coef != 0], "lasso.coef.metastasis_2nd_option.csv")
+```
+
+```{r}
+# Run algorithms using 10-fold cross validation
+test_data_TNBC <- read.csv(file = 'test_data_TNBC_FOLD02_2.csv', row.names = 1)
+TNBC_LASSO_FOLD02_data <- read.csv(file = 'lasso_data.csv', row.names = 1)
+TNBC_LASSO_FOLD02_data$response <-as.factor(TNBC_LASSO_FOLD02_data$response)
+test_data_TNBC$response <-as.factor(test_data_TNBC$response)
+
+
+library(randomForest)
+library(randomForest)
+library(prediction)
+library(ROCR)
+library(pROC)
+require(party)
+library(dplyr)
+library(ggplot2)
+library(caret)
+library(varImp)
+#rf-other method
+x.rf.imp.weka <- randomForest(response~ ., data= TNBC_LASSO_FOLD02_data)
+p1.x.cf1_imp.weka<- predict(x.rf.imp.weka, TNBC_LASSO_FOLD02_data)
+confusionMatrix(p1.x.cf1_imp.weka, TNBC_LASSO_FOLD02_data$response)
+preds.x.cf1_imp.train.rf.weka <- prediction(as.numeric(p1.x.cf1_imp.weka), na.omit(TNBC_LASSO_FOLD02_data$response))
+perf.x.cf1_imp.train.rf.weka <- performance(preds.x.cf1_imp.train.rf.weka,"tpr","fpr")
+
+pred.x.cf1_imp.weka <- predict(x.rf.imp.weka, test_data_TNBC, type = "response")
+confusionMatrix(pred.x.cf1_imp.weka, test_data_TNBC$response)
+preds.x.cf1_imp.weka <- prediction(as.numeric(pred.x.cf1_imp.weka), na.omit(test_data_TNBC$response))
+perf.x.cf1_imp.weka <- performance(preds.x.cf1_imp.weka,"tpr","fpr")
+performance(preds.x.cf1_imp.weka,"auc")@y.values
+
+#SVM
+library(caret)
+require(e1071)
+x.svm.imp.weka <- svm(response~., data= TNBC_LASSO_FOLD02_data,type="C-classification",kernel="radial")
+p1.x.svm.cf1_imp.weka <- predict(x.svm.imp.weka, na.omit(TNBC_LASSO_FOLD02_data), type="prob")
+confusionMatrix(p1.x.svm.cf1_imp.weka, na.omit(TNBC_LASSO_FOLD02_data$response))
+preds.svm.cf1_imp.svm.train.weka <- prediction(as.numeric(p1.x.svm.cf1_imp.weka), na.omit(TNBC_LASSO_FOLD02_data$response))
+perf.svm.cf1_imp.svm.train.weka <- performance(preds.svm.cf1_imp.svm.train.weka,"tpr","fpr")
+
+pred.svm.cf1_imp.weka <- predict(x.svm.imp.weka,  na.omit(test_data_TNBC), type="prob")
+confusionMatrix(pred.svm.cf1_imp.weka, na.omit(test_data_TNBC$response))
+preds.svm.cf1_imp.weka <- prediction(as.numeric(pred.svm.cf1_imp.weka), na.omit(test_data_TNBC$response))
+perf.svm.cf1_imp.weka <- performance(preds.svm.cf1_imp.weka,"tpr","fpr")
+performance(preds.svm.cf1_imp.weka,"auc")@y.values
+
+
+#KNN
+
+x.knn.imp.weka <- train(response~., data=na.omit(TNBC_LASSO_FOLD02_data), method="knn")
+p1.x.knn.cf1_imp.weka <- predict(x.knn.imp.weka, na.omit(TNBC_LASSO_FOLD02_data), type="raw")
+confusionMatrix(p1.x.knn.cf1_imp.weka, TNBC_LASSO_FOLD02_data$response)
+preds.knn.cf1_imp.knn.train.weka <- prediction(as.numeric(p1.x.knn.cf1_imp.weka), na.omit(TNBC_LASSO_FOLD02_data$response))
+perf.knn.cf1_imp.knn.train.weka <- performance(preds.knn.cf1_imp.knn.train.weka,"tpr","fpr")
+
+pred.knn.cf1.imp.weka <- predict(x.knn.imp.weka,  na.omit(test_data_TNBC), type="raw")
+confusionMatrix(pred.knn.cf1.imp.weka, na.omit(test_data_TNBC$response))
+preds.knn.cf1_imp.weka <- prediction(as.numeric(pred.knn.cf1.imp.weka), na.omit(test_data_TNBC$response))
+perf.knn.cf1_imp.weka <- performance(preds.knn.cf1_imp.weka,"tpr","fpr")
+performance(preds.knn.cf1_imp.weka,"auc")@y.values
+```
+
+```{r}
+library(pROC)
+
+#rf_train
+plot(perf.x.cf1_imp.train.rf.weka, main = "ROC Curve for RF, SVM, and KNN Train Model", col=4, lwd =2)
+grid()
+legend(0.6, 0.6, c('RF', 'SVM', 'KNN'), 4:6)
+legend("bottomright", legend = paste("AUC_RF =", round(performance(preds.x.cf1_imp.train.rf.weka, "auc")@y.values[[1]], 2), "AUC_SVM =", round(performance(preds.svm.cf1_imp.svm.train.weka, "auc")@y.values[[1]], 2), "AUC_KNN =", round(performance(preds.knn.cf1_imp.knn.train.weka, "auc")@y.values[[1]], 2))) 
+
+#SVM_train
+plot(perf.svm.cf1_imp.svm.train.weka, col=5, lwd =2, add = TRUE)
+
+#KNN_train
+plot(perf.knn.cf1_imp.knn.train.weka, col=6, lwd =2, add = TRUE)
+
+
+#rf_test
+
+plot(perf.x.cf1_imp.weka, main = "ROC Curve for RF, SVM, and KNN test Model", col=4, lwd =2)
+grid()
+legend(0.6, 0.6, c('RF', 'SVM', 'KNN'), 4:6)
+legend("bottomright", legend = paste("AUC_RF =", round(performance(preds.x.cf1_imp.weka, "auc")@y.values[[1]], 2), "AUC_SVM =", round(performance(preds.svm.cf1_imp.weka, "auc")@y.values[[1]], 2), "AUC_KNN =", round(performance(preds.knn.cf1_imp.weka, "auc")@y.values[[1]], 2))) 
+
+#svm_test
+plot(perf.svm.cf1_imp.weka, col=5, lwd =2, add = TRUE)
+
+#knn_test
+plot(perf.knn.cf1_imp.weka, col=6, lwd =2, add = TRUE)
+```
+
+
+```{r}
+#VARSELRF
+
+x_varselrf <- dplyr::select(train_data_TNBC, -response)
+y_varselrf <- train_data_TNBC$response
+
+library(varSelRF)
+rf.vs1<- varSelRF(x_varselrf, y_varselrf,c.sd=1, mtryFactor=1, ntree = 5000, ntreeIterat = 2000,vars.drop.frac = 0.2)
+VARS <-rf.vs1$selected.vars
+write.csv(VARS, "VARS_TNBC_FOLD02_2.csv")
+```
+
+```{r}
+
+# Run algorithms using 10-fold cross validation
+
+# Run algorithms using 10-fold cross validation
+verselrf_FOLD01_data <- read.csv(file = 'varselrf_data.csv', row.names = 1)
+verselrf_FOLD01_data$response <-as.factor(verselrf_FOLD01_data$response)
+test_data_TNBC$response <-as.factor(test_data_TNBC$response)
+
+
+library(randomForest)
+library(randomForest)
+library(prediction)
+library(ROCR)
+library(pROC)
+require(party)
+library(dplyr)
+library(ggplot2)
+library(caret)
+library(varImp)
+
+#rf-other method
+x.rf.varselrf.weka <- randomForest(response~ ., data=verselrf_FOLD01_data)
+p1.x.cf1_varselrf.weka<- predict(x.rf.varselrf.weka, verselrf_FOLD01_data)
+confusionMatrix(p1.x.cf1_varselrf.weka, verselrf_FOLD01_data$response)
+pred.x.cf1_varselrf.weka <- predict(x.rf.varselrf.weka, test_data_TNBC, type = "response")
+confusionMatrix(pred.x.cf1_varselrf.weka, test_data_TNBC$response)
+preds.x.cf1_varselrf.weka <- prediction(as.numeric(pred.x.cf1_varselrf.weka), na.omit(test_data_TNBC$response))
+perf.x.cf1_varselrf.weka <- performance(preds.x.cf1_varselrf.weka,"tpr","fpr")
+performance(preds.x.cf1_varselrf.weka,"auc")@y.values
+
+
+#SVM
+library(caret)
+require(e1071)
+x.svm.varselrf.weka <- svm(response~., data = na.omit(verselrf_FOLD01_data),type="C-classification",kernel="radial")
+p1.x.svm.cf1_varselrf.weka <- predict(x.svm.varselrf.weka, na.omit(verselrf_FOLD01_data), type="prob")
+confusionMatrix(p1.x.svm.cf1_varselrf.weka, na.omit(verselrf_FOLD01_data$response))
+pred.svm.cf1_varselrf.weka <- predict(x.svm.varselrf.weka,  na.omit(test_data_TNBC), type="prob")
+confusionMatrix(pred.svm.cf1_varselrf.weka, na.omit(test_data_TNBC$response))
+preds.svm.cf1_varselrf.weka <- prediction(as.numeric(pred.svm.cf1_varselrf.weka), na.omit(test_data_TNBC$response))
+perf.svm.cf1_varselrf.weka <- performance(preds.svm.cf1_varselrf.weka,"tpr","fpr")
+performance(preds.svm.cf1_varselrf.weka,"auc")@y.values
+
+
+#KNN
+
+x.knn.varselrf.weka <- train(response~., data=na.omit(verselrf_FOLD01_data), method="knn")
+p1.x.knn.cf1_varselrf.weka <- predict(x.knn.varselrf.weka, na.omit(verselrf_FOLD01_data), type="raw")
+confusionMatrix(p1.x.knn.cf1_varselrf.weka, verselrf_FOLD01_data$response)
+pred.knn.cf1_varselrf.weka <- predict(x.knn.varselrf.weka,  na.omit(test_data_TNBC), type="raw")
+confusionMatrix(pred.knn.cf1_varselrf.weka, na.omit(test_data_TNBC$response))
+preds.knn.cf1_varselrf.weka <- prediction(as.numeric(pred.knn.cf1_varselrf.weka), na.omit(test_data_TNBC$response))
+perf.knn.cf1_varselrf.weka <- performance(preds.knn.cf1_varselrf.weka,"tpr","fpr")
+performance(preds.knn.cf1_varselrf.weka,"auc")@y.values
+```
+
+
+```{r}
+
+# Run algorithms using 10-fold cross validation
+
+# Run algorithms using 10-fold cross validation
+verselrf_lasso_TNBC_data <- read.csv(file = 'lasso_data - varselrf.csv', row.names = 1)
+verselrf_lasso_TNBC_data$response <-as.factor(verselrf_lasso_TNBC_data$response)
+test_data_TNBC$response <-as.factor(test_data_TNBC$response)
+
+
+library(randomForest)
+library(randomForest)
+library(prediction)
+library(ROCR)
+library(pROC)
+require(party)
+library(dplyr)
+library(ggplot2)
+library(caret)
+library(varImp)
+
+#rf-other method
+x.rf.varselrf.weka <- randomForest(response~ ., data=verselrf_lasso_TNBC_data)
+p1.x.cf1_varselrf.weka<- predict(x.rf.varselrf.weka, verselrf_lasso_TNBC_data)
+confusionMatrix(p1.x.cf1_varselrf.weka, verselrf_lasso_TNBC_data$response)
+pred.x.cf1_varselrf.weka <- predict(x.rf.varselrf.weka, test_data_TNBC, type = "response")
+confusionMatrix(pred.x.cf1_varselrf.weka, test_data_TNBC$response)
+preds.x.cf1_varselrf.weka <- prediction(as.numeric(pred.x.cf1_varselrf.weka), na.omit(test_data_TNBC$response))
+perf.x.cf1_varselrf.weka <- performance(preds.x.cf1_varselrf.weka,"tpr","fpr")
+performance(preds.x.cf1_varselrf.weka,"auc")@y.values
+
+
+#SVM
+library(caret)
+require(e1071)
+x.svm.varselrf.weka <- svm(response~., data = na.omit(verselrf_lasso_TNBC_data),type="C-classification",kernel="radial")
+p1.x.svm.cf1_varselrf.weka <- predict(x.svm.varselrf.weka, na.omit(verselrf_lasso_TNBC_data), type="prob")
+confusionMatrix(p1.x.svm.cf1_varselrf.weka, na.omit(verselrf_lasso_TNBC_data$response))
+pred.svm.cf1_varselrf.weka <- predict(x.svm.varselrf.weka,  na.omit(test_data_TNBC), type="prob")
+confusionMatrix(pred.svm.cf1_varselrf.weka, na.omit(test_data_TNBC$response))
+preds.svm.cf1_varselrf.weka <- prediction(as.numeric(pred.svm.cf1_varselrf.weka), na.omit(test_data_TNBC$response))
+perf.svm.cf1_varselrf.weka <- performance(preds.svm.cf1_varselrf.weka,"tpr","fpr")
+performance(preds.svm.cf1_varselrf.weka,"auc")@y.values
+
+
+#KNN
+
+x.knn.varselrf.weka <- train(response~., data=na.omit(verselrf_lasso_TNBC_data), method="knn")
+p1.x.knn.cf1_varselrf.weka <- predict(x.knn.varselrf.weka, na.omit(verselrf_lasso_TNBC_data), type="raw")
+confusionMatrix(p1.x.knn.cf1_varselrf.weka, verselrf_lasso_TNBC_data$response)
+pred.knn.cf1_varselrf.weka <- predict(x.knn.varselrf.weka,  na.omit(test_data_TNBC), type="raw")
+confusionMatrix(pred.knn.cf1_varselrf.weka, na.omit(test_data_TNBC$response))
+preds.knn.cf1_varselrf.weka <- prediction(as.numeric(pred.knn.cf1_varselrf.weka), na.omit(test_data_TNBC$response))
+perf.knn.cf1_varselrf.weka <- performance(preds.knn.cf1_varselrf.weka,"tpr","fpr")
+performance(preds.knn.cf1_varselrf.weka,"auc")@y.values
+
+```
+
+
+```{r}
+#PCA_TEST_SET_AFTER_FEATURE_SELECTION
+verselrf_lasso_TNBC_test <- read.csv(file = 'varselrf_lasso_data.csv', row.names = 1)
+
+num_pca_test_b_fS_primary = subset(verselrf_lasso_TNBC_test, select = -c(response) )
+
+library(factoextra)
+pc_pvalues_Test_b_fs_primary <- prcomp(num_pca_test_b_fS_primary,scale = FALSE)#%>% fviz_eig()
+pc_pvalues_Test_b_fs_primary
+summary(pc_pvalues_Test_b_fs_primary)
+
+library(ggbiplot)
+biplot2=ggbiplot(pc_pvalues_Test_b_fs_primary, choices = c(1,2), obs.scale = 1,var.scale = 1,
+  groups = verselrf_lasso_TNBC_test$response, var.axes = FALSE, ellipse = FALSE) + scale_color_discrete(name = '') +
+  theme(legend.direction = 'horizontal', legend.position = 'top')
+biplot2 + theme_classic()
+```
+
+```{r}
+#TRAIN_ LASSO
+library(pROC)
+#rf_train
+pred_rf_varselrf_lasso <- predict(x.rf.varselrf.weka, verselrf_lasso_TNBC_data, index=2, type="prob", norm.votes=TRUE, predict.all=FALSE, proximity=FALSE, nodes=FALSE)
+head(pred_rf_varselrf_lasso)
+pred_rf_varselrf_lasso <- data.frame(pred_rf_varselrf_lasso)
+
+rf_train_lasso_varselrf <- roc(verselrf_lasso_TNBC_data$response, pred_rf_varselrf_lasso$pCR, percent=F,   boot.n=1000, ci.alpha=0.95, stratified=FALSE, plot=TRUE, grid=TRUE, show.thres=TRUE, legacy.axes = TRUE, reuse.auc = TRUE,print.auc = TRUE, print.thres.col = "blue", ci=TRUE, ci.type="bars", print.thres.cex = 0.3, main = paste("ROC curve of RF using ","(N = ",nrow(verselrf_lasso_TNBC_data),")") )
+rf_train_lasso_varselrf
+
+#svm_train
+
+pred_svm_lasso_varselrf <- predict(x.svm.varselrf.weka, verselrf_lasso_TNBC_data, index=2, type="prob", norm.votes=TRUE, predict.all=FALSE, proximity=FALSE, nodes=FALSE)
+head(pred_svm_lasso_varselrf)
+pred_svm_lasso_varselrf <- data.frame(pred_svm_lasso_varselrf)
+
+svm_train_varselrf_lasso <- roc(verselrf_lasso_TNBC_data$response, pred_rf_varselrf_lasso$pCR, percent=F,   boot.n=1000, ci.alpha=0.95, stratified=FALSE, plot=TRUE, grid=TRUE, show.thres=TRUE, legacy.axes = TRUE, reuse.auc = TRUE,print.auc = TRUE, print.thres.col = "blue", ci=TRUE, ci.type="bars", print.thres.cex = 0.3, main = paste("ROC curve of SVM using","(N = ",nrow(verselrf_lasso_TNBC_data),")") )
+svm_train_varselrf_lasso
+
+#KNN
+
+pred_knn_varselrf <- predict(x.knn.varselrf.weka, verselrf_lasso_TNBC_data, index=2, type="prob", norm.votes=TRUE, predict.all=FALSE, proximity=FALSE, nodes=FALSE)
+head(pred_knn_varselrf)
+pred_knn_varselrf <- data.frame(pred_knn_varselrf)
+knn_train_varselrf_lasso <- roc(verselrf_lasso_TNBC_data$response, pred_knn_varselrf$pCR, percent=F,   boot.n=1000, ci.alpha=0.95, stratified=FALSE, plot=TRUE, grid=TRUE, show.thres=TRUE, legacy.axes = TRUE, reuse.auc = TRUE,print.auc = TRUE, print.thres.col = "blue", ci=TRUE, ci.type="bars", print.thres.cex = 0.3, main = paste("ROC curve of KNN using","(N = ",nrow(verselrf_lasso_TNBC_data),")") )
+knn_train_varselrf_lasso
+
+
+
+#TEST_ LASSO
+library(pROC)
+#rf_train
+pred_rf_lasso_varselrf_test <- predict(x.rf.varselrf.weka, verselrf_lasso_TNBC_test, index=2, type="prob", norm.votes=TRUE, predict.all=FALSE, proximity=FALSE, nodes=FALSE)
+head(pred_rf_lasso_varselrf_test)
+pred_rf_lasso_varselrf_test <- data.frame(pred_rf_lasso_varselrf_test)
+
+rf_test_varselrf_lasso <- roc(verselrf_lasso_TNBC_test$response, pred_rf_lasso_varselrf_test$pCR, percent=F,   boot.n=1000, ci.alpha=0.95, stratified=FALSE, plot=TRUE, grid=TRUE, show.thres=TRUE, legacy.axes = TRUE, reuse.auc = TRUE,print.auc = TRUE, print.thres.col = "blue", ci=TRUE, ci.type="bars", print.thres.cex = 0.3, main = paste("ROC curve of kNN using","(N = ",nrow(test_data_TNBC),")") )
+rf_test_varselrf_lasso
+
+#svm_train
+
+pred_svm_varselrf_lasso_test <- predict(x.svm.imp.weka, test_data_TNBC, index=2, type="class", norm.votes=TRUE, predict.all=FALSE, proximity=FALSE, nodes=FALSE)
+head(pred_svm_varselrf_lasso_test)
+pred_svm_varselrf_lasso_test <- data.frame(pred_svm_varselrf_lasso_test)
+
+svm_test_varselrf_lasso <- roc(test_data_TNBC$response, pred_rf_lasso_varselrf_test$pCR, percent=F,   boot.n=1000, ci.alpha=0.95, stratified=FALSE, plot=TRUE, grid=TRUE, show.thres=TRUE, legacy.axes = TRUE, reuse.auc = TRUE,print.auc = TRUE, print.thres.col = "blue", ci=TRUE, ci.type="bars", print.thres.cex = 0.3, main = paste("ROC curve of KNN using","(N = ",nrow(test_data_TNBC),")") )
+svm_test_varselrf_lasso
+
+
+#KNN
+
+
+pred_knn_varselrf_lasso_test <- predict(x.knn.imp.weka, test_data_TNBC, index=2, type="prob", norm.votes=TRUE, predict.all=FALSE, proximity=FALSE, nodes=FALSE)
+head(pred_knn_varselrf_lasso_test)
+pred_knn_varselrf_lasso_test <- data.frame(pred_knn_varselrf_lasso_test)
+knn_test_varselrf_lasso <- roc(test_data_TNBC$response, pred_knn_varselrf_lasso_test$pCR, percent=F,   boot.n=1000, ci.alpha=0.95, stratified=FALSE, plot=TRUE, grid=TRUE, show.thres=TRUE, legacy.axes = TRUE, reuse.auc = TRUE,print.auc = TRUE, print.thres.col = "blue", ci=TRUE, ci.type="bars", print.thres.cex = 0.3, main = paste("ROC curve of SVM using","(N = ",nrow(test_data_TNBC),")") )
+knn_test_varselrf_lasso
+
+
+```
+
+
